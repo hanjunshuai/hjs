@@ -2,16 +2,20 @@ package hjs.zhi.com.wifilist;
 
 import android.Manifest;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.net.NetworkInfo;
+import android.net.Uri;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
+import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.support.annotation.NonNull;
 import android.support.v4.app.ActivityCompat;
 import android.support.v7.app.AppCompatActivity;
@@ -19,13 +23,18 @@ import android.support.v7.widget.LinearLayoutManager;
 import android.support.v7.widget.RecyclerView;
 import android.util.Log;
 import android.view.View;
+import android.widget.Button;
 import android.widget.ProgressBar;
 import android.widget.Toast;
 
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+import butterknife.BindView;
+import butterknife.ButterKnife;
+import butterknife.OnClick;
 import hjs.zhi.com.wifilist.adapter.WifiListAdapter;
 import hjs.zhi.com.wifilist.app.AppContants;
 import hjs.zhi.com.wifilist.bean.WifiBean;
@@ -42,6 +51,12 @@ public class MainActivity extends AppCompatActivity {
             Manifest.permission.ACCESS_COARSE_LOCATION,
             Manifest.permission.ACCESS_FINE_LOCATION
     };
+    @BindView(R.id.btn_find)
+    Button btnFind;
+    @BindView(R.id.btn_ap)
+    Button btnAp;
+    @BindView(R.id.btn_close)
+    Button btnClose;
 
     private boolean mHasPermission;
 
@@ -61,18 +76,11 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main3);
+        ButterKnife.bind(this);
         pbWifiLoading = this.findViewById(R.id.pb_wifi_loading);
 
         hidingProgressBar();
         mHasPermission = checkPermission();
-        if (!mHasPermission && WifiSupport.isOpenWifi(MainActivity.this)) {  //未获取权限，申请权限
-            requestPermission();
-        } else if (mHasPermission && WifiSupport.isOpenWifi(MainActivity.this)) {  //已经获取权限
-            initRecycler();
-        } else {
-            Toast.makeText(MainActivity.this, "WIFI处于关闭状态", Toast.LENGTH_SHORT).show();
-        }
-
 
     }
 
@@ -134,6 +142,120 @@ public class MainActivity extends AppCompatActivity {
     protected void onPause() {
         super.onPause();
         this.unregisterReceiver(wifiReceiver);
+    }
+
+    @OnClick({R.id.btn_find, R.id.btn_ap, R.id.btn_close})
+    public void onViewClicked(View view) {
+        switch (view.getId()) {
+            case R.id.btn_find:
+                if (!mHasPermission && WifiSupport.isOpenWifi(MainActivity.this)) {  //未获取权限，申请权限
+                    requestPermission();
+                } else if (mHasPermission && WifiSupport.isOpenWifi(MainActivity.this)) {  //已经获取权限
+                    initRecycler();
+                } else {
+                    Toast.makeText(MainActivity.this, "WIFI处于关闭状态", Toast.LENGTH_SHORT).show();
+                }
+                break;
+            case R.id.btn_ap:
+                if (isHasPermissions()) {
+                    setWifiApEnabled(true);
+                }
+                break;
+            case R.id.btn_close:
+                break;
+        }
+    }
+
+    private boolean isHasPermissions() {
+        boolean result = false;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (!Settings.System.canWrite(this)) {
+                Toast.makeText(this, "打开热点需要启用“修改系统设置”权限，请手动开启", Toast.LENGTH_SHORT).show();
+
+                //清单文件中需要android.permission.WRITE_SETTINGS，否则打开的设置页面开关是灰色的
+                Intent intent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS);
+                intent.setData(Uri.parse("package:" + this.getPackageName()));
+                //判断系统能否处理，部分ROM无此action，如魅族Flyme
+                if (intent.resolveActivity(getPackageManager()) != null) {
+                    startActivity(intent);
+                } else {
+                    //打开应用详情页
+                    intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                    intent.setData(Uri.parse("package:" + this.getPackageName()));
+                    if (intent.resolveActivity(getPackageManager()) != null) {
+                        startActivity(intent);
+                    }
+                }
+            } else {
+                result = true;
+            }
+        } else {
+            result = true;
+        }
+        return result;
+    }
+
+    private boolean setWifiApEnabled(boolean enabled) {
+        boolean result = false;
+        WifiManager wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+        if (wifiManager == null) {
+            return false;
+        }
+        if (enabled) {
+            //wifi和热点不能同时打开，所以打开热点的时候需要关闭wifi
+            if (wifiManager.isWifiEnabled()) {
+                wifiManager.setWifiEnabled(false);
+            }
+        }
+        try {
+            //热点的配置类
+            //WifiConfiguration apConfig = new WifiConfiguration();
+            Method method = wifiManager.getClass().getMethod("getWifiApConfiguration");
+            WifiConfiguration apConfig = (WifiConfiguration) method.invoke(wifiManager);
+            //配置热点的名称
+            apConfig.SSID = "hjs";
+            //配置热点的密码，至少八位
+            apConfig.preSharedKey = "hjs0302..";
+            //必须指定allowedKeyManagement，否则会显示为无密码
+            //指定安全性为WPA_PSK，在不支持WPA_PSK的手机上看不到密码
+            //apConfig.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK);
+            //指定安全性为WPA2_PSK，（官方值为4，小米为6，如果指定为4，小米会变为无密码热点）
+            int indexOfWPA2_PSK = 4;
+            //从WifiConfiguration.KeyMgmt数组中查找WPA2_PSK的值
+            for (int i = 0; i < WifiConfiguration.KeyMgmt.strings.length; i++) {
+                if (WifiConfiguration.KeyMgmt.strings[i].equals("WPA2_PSK")) {
+                    indexOfWPA2_PSK = i;
+                    break;
+                }
+            }
+            apConfig.allowedKeyManagement.set(indexOfWPA2_PSK);
+            //TODO Android 8.0已废弃setWifiApEnabled方法，未测试
+            //通过反射调用设置热点
+            method = wifiManager.getClass().getMethod("setWifiApEnabled", WifiConfiguration.class, boolean.class);
+            //返回热点打开状态
+            result = (Boolean) method.invoke(wifiManager, apConfig, enabled);
+            if (!result) {
+                Toast.makeText(this, "热点创建失败，请手动创建！", Toast.LENGTH_SHORT).show();
+                openAPUI();
+            }
+        } catch (Exception e) {
+            Toast.makeText(this, "热点创建失败，请手动创建！", Toast.LENGTH_SHORT).show();
+            openAPUI();
+        }
+        return result;
+    }
+
+    /**
+     * 打开网络共享与热点设置页面
+     */
+    private void openAPUI() {
+        Intent intent = new Intent();
+        //直接打开热点设置页面（不同ROM有差异）
+        ComponentName comp = new ComponentName("com.android.settings", "com.android.settings.Settings$TetherSettingsActivity");
+        //下面这个是打开网络共享与热点设置页面
+        //ComponentName comp = new ComponentName("com.android.settings", "com.android.settings.TetherSettings");
+        intent.setComponent(comp);
+        startActivity(intent);
     }
 
     //监听wifi状态
@@ -251,7 +373,8 @@ public class MainActivity extends AppCompatActivity {
         if (index != -1) {
             realWifiList.remove(index);
             realWifiList.add(0, wifiInfo);
-            adapter.notifyDataSetChanged();
+            if (adapter != null)
+                adapter.notifyDataSetChanged();
         }
     }
 
@@ -295,7 +418,8 @@ public class MainActivity extends AppCompatActivity {
 
                 //排序
                 Collections.sort(realWifiList);
-                adapter.notifyDataSetChanged();
+                if (adapter != null)
+                    adapter.notifyDataSetChanged();
             }
         }
     }
